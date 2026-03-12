@@ -20,5 +20,5 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://<your-databricks-workspace>
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+      host: https://adb-7589662637287051.11.azuredatabricks.net/
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.target}/${bundle.name}

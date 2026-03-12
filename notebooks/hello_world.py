@@ -7,3 +7,5 @@ Hello World notebook — verifies the environment is set up correctly.
 
 print("Hello, world!")
 print("Environment is ...ALMOST... ready.")
+
+# COMMAND ----------
