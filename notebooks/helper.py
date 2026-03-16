@@ -1,5 +1,7 @@
+from loguru import logger
 import yaml
 import os
+import sys
 
 
 def load_config(env="dev", config_filename="config.yml"):
@@ -26,8 +28,31 @@ def load_config(env="dev", config_filename="config.yml"):
     cat = cfg["catalog"]
     sch = cfg["schema"]
     vol = cfg["volume"]
+    base = cfg["storage_base"]
     cfg["parsed_table"] = f"{cat}.{sch}.parsed_documents"
     cfg["chunks_table"] = f"{cat}.{sch}.document_chunks"
     cfg["chunks_index"] = f"{cat}.{sch}.document_chunks_index"
-
+    cfg["parsed_table_location"] = f"{base}/parsed_documents"
+    cfg["chunks_table_location"] = f"{base}/document_chunks"
+    
     return cfg
+
+def setup_logger(level="INFO"):
+    """
+    Configure loguru logger with a consistent format.
+    Call once at the start of a notebook. Safe to call multiple times.
+
+    Args:
+        level: Logging level (default: "INFO")
+
+    Returns:
+        loguru.logger instance
+    """
+    logger.remove()  # Remove default handler
+    logger.add(
+        sys.stderr,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level:<7} | {message}",
+        level=level,
+        colorize=True,
+    )
+    return logger

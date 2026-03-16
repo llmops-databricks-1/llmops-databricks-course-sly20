@@ -5,6 +5,7 @@ dev:
   catalog: exso_deep_dev
   schema: dev
   volume: static-dev/SD_dev/opex_documents/
+  storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/exso_deep_argus_delta_tables/opex_doc
   llm_endpoint: databricks-llama-4-maverick
   embedding_endpoint: databricks-gte-large-en
   warehouse_id: dab4e24578376346
@@ -16,6 +17,7 @@ acc:
   catalog: exso_deep_dev
   schema: dev
   volume: static-dev/SD_dev/opex_documents/
+  storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/opex_doc
   llm_endpoint: databricks-meta-llama-3-1-70b-instruct
   embedding_endpoint: databricks-gte-large-en
   warehouse_id: dab4e24578376346
@@ -27,6 +29,7 @@ prd:
   catalog: exso_deep_dev
   schema: dev
   volume: static-dev/SD_dev/opex_documents/
+  storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/opex_doc
   llm_endpoint: databricks-meta-llama-3-1-70b-instruct
   embedding_endpoint: databricks-gte-large-en
   warehouse_id: 7077f4cb0e616c62
