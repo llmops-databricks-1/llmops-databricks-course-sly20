@@ -1,7 +1,7 @@
 resources:
   jobs:
-    hello_world_job:
-      name: hello-world
+    main:
+      name: main
       tags:
         project_name: "llmops-databricks-course-sly20"
 
@@ -13,10 +13,10 @@ resources:
               - ../dist/*.whl
 
       tasks:
-        - task_key: hello_world
+        - task_key: main
           environment_key: default
           notebook_task:
-            notebook_path: ../notebooks/hello_world.py
+            notebook_path: ../notebooks/main.py
             base_parameters:
               env: ${bundle.target}
               git_sha: "${var.git_sha}"
