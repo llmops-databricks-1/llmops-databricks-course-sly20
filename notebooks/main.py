@@ -1,35 +1,35 @@
 # Databricks notebook source
-# ingest data from sharepoint - nned prividge to get the sharepoint connection
+# ingest data from sharepoint - need prividge to get the sharepoint connection
 # Documentation:  ADF SharePoint Online connector: https://learn.microsoft.com/en-us/azure/data-factory/connector-sharepoint-online-list?tabs=data-factory  (URL of a page that displays a list of files in a library)
-# data engineer work
+# data engineer work - seems possible to get metadata from SP library cols
 # for now, manual ingest in a Volume
-from datetime import datetime
 
+from databricks.connect import DatabricksSession
 from loguru import logger
-from pyspark.sql import SparkSession
-from pyspark.sql.types import ArrayType, LongType, StringType, StructField, StructType
 
-from helper import load_config, setup_logger, logger
+import sharepoint_knowledge_base
+
+from sharepoint_knowledge_base.config import get_env, load_config, logger, setup_logger
+from sharepoint_knowledge_base.data_processor import DataProcessor
+
+from databricks.vector_search.client import VectorSearchClient
+from databricks.vector_search.reranker import DatabricksReranker
+
+from sharepoint_knowledge_base.vector_search import VectorSearchManager
+
+
+spark = DatabricksSession.builder.getOrCreate()
+logger.info("✅ Using Databricks Connect Spark session")
 
 setup_logger()
 
-cfg = load_config(env="dev")
+env = get_env(spark)
+cfg = load_config("../project_config.yml", env)
+catalog = cfg.catalog
+schema = cfg.schema
+volume = cfg.volume
 
-CATALOG = cfg["catalog"]
-SCHEMA = cfg["schema"]
-VOLUME = cfg["volume"]
-DOC_PATH= f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
-
-
-logger.info(f"Catalog:     {CATALOG}")
-logger.info(f"Schema:      {SCHEMA}")
-logger.info(f"Volume:      {DOC_PATH}")
-
-
-files = dbutils.fs.ls(DOC_PATH)
-for f in files:
-    print(f"{f.name:60s} {f.size:>10} bytes")
-print(f"\nTotal: {len(files)} items")
+logger.info(f"Catalog: {catalog}, Schema: {schema}, Volume: {volume}")
 
 # here should not be much since pdf come from the volume.
 # if from SP, need to check ingestion pipeline and connection + priviledge
@@ -43,50 +43,68 @@ print(f"\nTotal: {len(files)} items")
 # 6- RAG Pipeline: retrieval + generation
 
 # COMMAND ----------
-PARSED_TABLE = cfg["parsed_table"]
-PARSED_TABLE_LOCATION = cfg["parsed_table_location"]
+# PROCESSING DATA
+processor = DataProcessor(spark=spark, config=cfg)
 
-logger.info(f"Parsed table: {PARSED_TABLE}")
+processor.process_and_save()
 
-
-df = spark.sql(f"""
-CREATE OR REPLACE TABLE {PARSED_TABLE} AS
-WITH parsed_docs AS (
-  SELECT
-    path,
-    ai_parse_document(content) AS parsed
-  FROM READ_FILES(
-    '{DOC_PATH}/*.pdf',
-    format => 'binaryFile'
-  )
-)
-SELECT
-  path,
-  regexp_extract(path, '[^/]+$') AS filename,
-  parsed,
-  try_cast(parsed:error_status AS STRING) AS error_status,
-  concat_ws('\\n\\n',
-    transform(
-      try_cast(parsed:document:elements AS ARRAY<VARIANT>),
-      element -> try_cast(element:content AS STRING)
-    )
-  ) AS full_text,
-  try_cast(parsed:document:pages AS ARRAY<VARIANT>) AS pages,
-  size(try_cast(parsed:document:pages AS ARRAY<VARIANT>)) AS num_pages,
-  current_timestamp() AS ingested_at
-FROM parsed_docs
-""")
-display(df)
 # COMMAND ----------
-LLM_ENDPOINT = cfg["llm_endpoint"]
-EMBEDDING_ENDPOINT = cfg["embedding_endpoint"]
-WAREHOUSE_ID = cfg["warehouse_id"]
-VS_ENDPOINT_NAME = cfg["vector_search_endpoint"]
-GENIE_SPACE_ID = cfg["genie_space_id"]
+# VECTOR SEARCH
+vs_manager = VectorSearchManager(
+    config=cfg,
+    endpoint_name=cfg.vector_search_endpoint,
+    embedding_model=cfg.embedding_endpoint
+)
+logger.info(f"Vector Search Endpoint: {vs_manager.endpoint_name}")
+logger.info(f"Embedding Model: {vs_manager.embedding_model}")
+logger.info(f"Index Name: {vs_manager.index_name}")
+# COMMAND ----------
+vs_manager.create_endpoint_if_not_exists()
+logger.success(f"Endpoint created: {vs_manager.endpoint_name}")
+# COMMAND ----------
+index = vs_manager.create_or_get_index()
 
-CHUNKS_TABLE = cfg["chunks_table"]
-CHUNKS_INDEX = cfg["chunks_index"]
+logger.success(f"f Index Created: {vs_manager.index_name}")
+logger.success(f"\n✓ Vector search setup complete!")
+logger.info(f"  Index: {vs_manager.index_name}")
+logger.info(f"  Source: {vs_manager.catalog}.{vs_manager.schema}.document_chunks")
+logger.info(f"  Embedding Model: {vs_manager.embedding_model}")
 
-logger.info(f"LLM:         {LLM_ENDPOINT}")
-logger.info(f"Embedding:   {EMBEDDING_ENDPOINT}")
-logger.info(f"VS Endpoint: {VS_ENDPOINT_NAME}")
+# COMMAND ----------
+
+def parse_vector_search_results(results):
+    """Parse vector search results from array format to dict format.
+    
+    Args:
+        results: Raw results from similarity_search()
+        
+    Returns:
+        List of dictionaries with column names as keys
+    """
+    columns = [col['name'] for col in results.get('manifest', {}).get('columns', [])]
+    data_array = results.get('result', {}).get('data_array', [])
+    
+    return [dict(zip(columns, row_data)) for row_data in data_array]
+
+
+
+# Simple similarity search
+query = "What are the best pratice in nitriding applied to extrusion"
+
+results = index.similarity_search(
+    query_text=query,
+    columns=["text", "id", "title", "arxiv_id"],
+    num_results=5
+)
+
+logger.info(f"Query: {query}\n")
+logger.info("Top 5 Results:")
+logger.info("=" * 80)
+
+# Parse results using helper function
+for i, row in enumerate(parse_vector_search_results(results), 1):
+    logger.info(f"\n{i}. Paper: {row.get('title', 'N/A')}")
+    logger.info(f"   arXiv ID: {row.get('arxiv_id', 'N/A')}")
+    logger.info(f"   Chunk ID: {row.get('id', 'N/A')}")
+    logger.info(f"   Text preview: {row.get('text', '')[:200]}...")
+    logger.info(f"   Score: {row.get('score', 'N/A'):.4f}")
