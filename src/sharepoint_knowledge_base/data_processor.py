@@ -8,6 +8,14 @@ ai_parsed_docs_table (JSON)
 arxiv_chunks_table (clean text + metadata)
    ↓ (VectorSearchManager - separate class) (2.4 notebook)
 Vector Search Index (embeddings)
+Volume layout:
+  /Volumes/<catalog>/<schema>/knowledgebase_for_agent/
+    ├── <category_folder_1>/    ← folder name becomes the document category
+    │   ├── doc_a.pdf
+    │   └── doc_b.pdf
+    ├── <category_folder_2>/
+    │   └── doc_c.pdf
+    └── root_doc.pdf            ← root-level files get category = 'general'
 """
 
 import json
@@ -81,7 +89,7 @@ class DataProcessor:
         self.schema = config.schema
         self.volume = config.volume
         self.base = config.storage_base
-        self.document_location = f"/Volumes/{self.catalog}/{self.schema}/{self.volume}"
+        self.document_location = f"/Volumes/{self.catalog}/{self.schema}/{self.volume}".rstrip("/") + "/"
         self.documents_metadata_table = f"{self.catalog}.{self.schema}.SP_documents_metadata"
         self.documents_metadata_table_location = f"{self.base}/SP_documents_metadata"
         self.parsed_table = f"{self.catalog}.{self.schema}.parsed_documents"
@@ -136,56 +144,71 @@ class DataProcessor:
         self,
     ) -> list[dict] | None:
         """
-        Get documents from volume and store metadata in documents table.  
-        In production, this should be done by ADF pipeline that moves files from SP to volume, and create the delta table with metadata.
+        Recursively scan the volume for PDFs, using each subfolder name as
+        the document `category`.  Root-level files get category = 'general'.
+
+        In production, this should be done by ADF pipeline that moves files
+        from SP to volume and creates the delta table with metadata.
 
         Returns:
-            List of paper metadata dictionaries if documents were downloaded,
+            List of paper metadata dictionaries if documents were found,
             otherwise None
         """
         start = self._get_range_start()
-
-        # Search for cocuments in volume
 
         from databricks.sdk import WorkspaceClient
 
         w = WorkspaceClient()
 
-        # Download papers and collect metadata
-        records = []
+        records: list[dict] = []
 
-        for doc in w.files.list_directory_contents(self.document_location):
-            try:
-                # Collect metadata
-                name_no_ext = doc.name.rsplit(".", 1)
-                records.append(
-                    {
-                        "doc_id": str(uuid.uuid4()),
-                        "title":  name_no_ext[0] if len(name_no_ext) > 0 else "",
-                        "type": name_no_ext[1] if len(name_no_ext) > 1 else "",
-                        "authors": [
-                            "get_from_SP"
-                        ],
-                        "category": "get_from_SP",
-                        "pdf_url": "get_from_SP",
-                        "published": doc.last_modified, #modif time at the moment, otherwise from SP
-                        "processed": int(self.end),  #should come from SP metadata
-                        "volume_path": f"dbfs:{self.document_location}{doc.name}"
-                    }
-                )
-            except Exception:
-                logger.warning(
-                    f"Document {doc.name} was not successfully processed."
-                )
-            # Avoid hitting API rate limits
-            time.sleep(3)
+        def _scan_folder(folder_path: str, category: str) -> None:
+            """Recursively scan *folder_path*; use *category* for every PDF found."""
+            for item in w.files.list_directory_contents(folder_path):
+                if item.is_directory:
+                    # Subfolder name becomes the category for all PDFs inside
+                    sub_path = f"{folder_path}{item.name}/"
+                    logger.info(f"Entering subfolder '{item.name}' → category='{item.name}'")
+                    _scan_folder(sub_path, category=item.name)
+                elif item.name.lower().endswith(".pdf"):
+                    try:
+                        name_no_ext = item.name.rsplit(".", 1)
+                        records.append(
+                            {
+                                "doc_id": str(uuid.uuid4()),
+                                "title": name_no_ext[0] if len(name_no_ext) > 0 else "",
+                                "type": name_no_ext[1] if len(name_no_ext) > 1 else "",
+                                "authors": ["SP_author"], #to get from SP metadata
+                                "category": category,
+                                "pdf_url": "SP_url", #to get from SP metadata
+                                "published": item.last_modified, #to get from SP metadata
+                                "processed": int(self.end),
+                                "volume_path": f"dbfs:{folder_path}{item.name}",
+                            }
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"Document {item.name} was not successfully processed."
+                        )
+                # Gentle rate-limit guard
+                time.sleep(0.5)
+
+        # Start scanning from the volume root
+        _scan_folder(self.document_location, category="general")
 
         # Only process if we have records
         if len(records) == 0:
             logger.info("No new documents found.")
             return None
 
-        logger.info(f"Found {len(records)} documents in {self.document_location}")
+        # Log category breakdown
+        from collections import Counter
+        cat_counts = Counter(r["category"] for r in records)
+        
+        logger.info(
+            f"Found {len(records)} documents in {self.document_location} — "
+            f"categories: {dict(cat_counts)}"
+        )
 
         # Create DataFrame and save to documents table
         schema = T.StructType(
@@ -212,13 +235,12 @@ class DataProcessor:
 
         # Create table if it doesn't exist
         table_exists = self._table_exists(self.documents_metadata_table)
-
+        # #    .option("path", self.documents_metadata_table_location) \
         if not table_exists:
             # First run: create table with overwrite to ensure it's created
             logger.info(f"Creating new table {self.documents_metadata_table}")
             metadata_df.write.format("delta").mode("overwrite") \
                 .option("overwriteSchema", "true") \
-                .option("path", self.documents_metadata_table_location) \
                 .saveAsTable(self.documents_metadata_table)
             logger.success(f"Created {self.documents_metadata_table} with {len(records)} records")
         else:
@@ -228,7 +250,12 @@ class DataProcessor:
             self.spark.sql(f"""
                 MERGE INTO {self.documents_metadata_table} target
                 USING new_documents source
-                ON target.doc_id = source.doc_id
+                ON target.title = source.title
+                WHEN MATCHED THEN UPDATE SET
+                    target.category = source.category,
+                    target.volume_path = source.volume_path,
+                    target.processed = source.processed,
+                    target.ingest_ts = source.ingest_ts
                 WHEN NOT MATCHED THEN INSERT (
                     doc_id, title, type, authors, category, pdf_url,
                     published, processed, volume_path, ingest_ts
@@ -244,7 +271,7 @@ class DataProcessor:
         if not self._table_exists(self.documents_metadata_table):
             raise RuntimeError(
                 f"Failed to create {self.documents_metadata_table}. "
-                f"Check external location permissions for {self.documents_metadata_table_location}"
+          #      f"Check external location permissions for {self.documents_metadata_table_location}"
             )
         return records
 
@@ -262,11 +289,10 @@ class DataProcessor:
             )
 
 
-        logger.info(f"Parsing PDFs from {self.document_location}...")
-
+       # logger.info(f"Parsing PDFs from {self.document_location}...")
+        #            LOCATION '{self.parsed_table_location}'
         self.spark.sql(f"""
             CREATE OR REPLACE TABLE {self.parsed_table}
-            LOCATION '{self.parsed_table_location}'
             AS
             WITH parsed_docs AS (
                 SELECT
@@ -274,8 +300,10 @@ class DataProcessor:
                     ai_parse_document(content) AS parsed_content,
                     {self.end} AS processed
                 FROM READ_FILES(
-                    '{self.document_location}/*.pdf',
-                    format => 'binaryFile'
+                    '{self.document_location}',
+                    format => 'binaryFile',
+                    pathGlobFilter => '*.pdf',
+                    recursiveFileLookup => 'true'
                 )
             )
             SELECT
@@ -386,8 +414,8 @@ class DataProcessor:
         logger.info(f"Writing chunks with mode='{write_mode}'")
 
         # Write to table
+        #        .option("path", self.chunks_table_location) \
         chunks_df.write.mode("append") \
-        .option("path", self.chunks_table_location) \
         .option("delta.enableChangeDataFeed", "true") \
         .saveAsTable(self.chunks_table)
 

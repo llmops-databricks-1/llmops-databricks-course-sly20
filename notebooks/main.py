@@ -17,7 +17,6 @@ from databricks.vector_search.reranker import DatabricksReranker
 
 from sharepoint_knowledge_base.vector_search import VectorSearchManager
 
-
 spark = DatabricksSession.builder.getOrCreate()
 logger.info("✅ Using Databricks Connect Spark session")
 
@@ -93,7 +92,7 @@ query = "What are the best pratice in nitriding applied to extrusion"
 
 results = index.similarity_search(
     query_text=query,
-    columns=["text", "id", "title", "arxiv_id"],
+    columns=["text", "id", "title", "doc_id"],
     num_results=5
 )
 

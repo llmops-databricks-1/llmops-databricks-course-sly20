@@ -3,8 +3,8 @@
 # Development environment
 dev:
   catalog: exso_deep_dev
-  schema: dev
-  volume: static-dev/SD_dev/opex_documents/
+  schema: default
+  volume: knowledgebase_for_agent/
   storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/exso_deep_argus_delta_tables/opex_doc
   llm_endpoint: databricks-llama-4-maverick
   embedding_endpoint: databricks-gte-large-en
@@ -15,8 +15,8 @@ dev:
 # Acceptance/Staging environment
 acc:
   catalog: exso_deep_dev
-  schema: dev
-  volume: static-dev/SD_dev/opex_documents/
+  schema: default
+  volume: knowledgebase_for_agent/
   storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/opex_doc
   llm_endpoint: databricks-meta-llama-3-1-70b-instruct
   embedding_endpoint: databricks-gte-large-en
@@ -27,8 +27,8 @@ acc:
 # Production environment
 prd:
   catalog: exso_deep_dev
-  schema: dev
-  volume: static-dev/SD_dev/opex_documents/
+  schema: default
+  volume: knowledgebase_for_agent/
   storage_base: abfss://static-dev@stexsodeep.dfs.core.windows.net/opex_doc
   llm_endpoint: databricks-meta-llama-3-1-70b-instruct
   embedding_endpoint: databricks-gte-large-en
